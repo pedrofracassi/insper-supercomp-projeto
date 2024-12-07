@@ -4,7 +4,7 @@
 #include <chrono>
 #include <algorithm>
 #include <iterator>
-#include <omp.h>
+#include <mpi.h>
 
 class MaxCliqueFinder
 {
@@ -53,12 +53,9 @@ public:
   {
     if (candidates.empty())
     {
-      #pragma omp critical
+      if (currentClique.size() > maxClique.size())
       {
-        if (currentClique.size() > maxClique.size())
-        {
-          maxClique = currentClique;
-        }
+        maxClique = currentClique;
       }
       return;
     }
@@ -75,7 +72,7 @@ public:
     }
   }
 
-  std::vector<int> findMaxClique()
+  std::vector<int> findMaxClique(int rank, int size)
   {
     std::vector<int> candidates(numVertices);
     for (int i = 0; i < numVertices; i++)
@@ -83,16 +80,25 @@ public:
       candidates[i] = i;
     }
 
-    #pragma omp parallel
+    std::vector<int> localMaxClique;
+    for (int i = rank; i < numVertices; i += size)
     {
       std::vector<int> localClique;
-      #pragma omp for schedule(dynamic)
-      for (int i = 0; i < numVertices; i++)
+      localClique.push_back(candidates[i]);
+      exhaustiveSearch(localClique, candidates, i + 1);
+      if (localClique.size() > localMaxClique.size())
       {
-        localClique.clear();
-        localClique.push_back(candidates[i]);
-        exhaustiveSearch(localClique, candidates, i + 1);
+        localMaxClique = localClique;
       }
+    }
+
+    int localMaxSize = localMaxClique.size();
+    int globalMaxSize;
+    MPI_Allreduce(&localMaxSize, &globalMaxSize, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+
+    if (localMaxSize == globalMaxSize)
+    {
+      maxClique = localMaxClique;
     }
 
     for (int &v : maxClique)
@@ -105,27 +111,41 @@ public:
 
 int main(int argc, char *argv[])
 {
+  MPI_Init(&argc, &argv);
+
+  int rank, size;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+
   if (argc != 2)
   {
-    std::cout << "Uso: " << argv[0] << " <arquivo_de_entrada>" << std::endl;
+    if (rank == 0)
+    {
+      std::cout << "Uso: " << argv[0] << " <arquivo_de_entrada>" << std::endl;
+    }
+    MPI_Finalize();
     return 1;
   }
 
   MaxCliqueFinder finder(argv[1]);
 
   auto start = std::chrono::high_resolution_clock::now();
-  std::vector<int> maxClique = finder.findMaxClique();
+  std::vector<int> maxClique = finder.findMaxClique(rank, size);
   auto end = std::chrono::high_resolution_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 
-  std::cout << "Tamanho da clique máxima: " << maxClique.size() << std::endl;
-  std::cout << "Vértices na clique máxima: ";
-  for (int vertex : maxClique)
+  if (rank == 0)
   {
-    std::cout << vertex << " ";
+    std::cout << "Tamanho da clique máxima: " << maxClique.size() << std::endl;
+    std::cout << "Vértices na clique máxima: ";
+    for (int vertex : maxClique)
+    {
+      std::cout << vertex << " ";
+    }
+    std::cout << std::endl;
+    std::cout << "Tempo de execução: " << duration.count() << " ms" << std::endl;
   }
-  std::cout << std::endl;
-  std::cout << "Tempo de execução: " << duration.count() << " ms" << std::endl;
 
+  MPI_Finalize();
   return 0;
 }
